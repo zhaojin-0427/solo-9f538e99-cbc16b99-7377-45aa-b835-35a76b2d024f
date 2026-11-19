@@ -11,7 +11,15 @@ from pydantic import ValidationError
 
 from . import config, services
 from .database import connect, init_db
-from .schemas import BatchResponse, BatchSubmit, ChainResponse, WaybillCreate
+from .schemas import (
+    AliasListResponse,
+    AliasReplace,
+    AliasView,
+    BatchResponse,
+    BatchSubmit,
+    ChainResponse,
+    WaybillCreate,
+)
 
 
 @asynccontextmanager
@@ -25,8 +33,10 @@ app = FastAPI(
     description=(
         "运单保管链（扫描交接 / 撤回 / 补报 / 更正）的修订裁决与可信前缀查询。"
         "同 ID 仅最高修订生效；同修订异文整批拒绝；失败保留旧链。"
+        "简称字典（/api/aliases）支持一个简称对应多家承运人，整组替换后按新字典重新核链；"
+        "接收候选多个时仅以紧接下一时刻的唯一扫描作旁证确认。"
     ),
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -106,6 +116,59 @@ def query_chain(
 ) -> ChainResponse:
     """返回可信连续交接前缀、首处断链原因与当前可确认保管方。"""
     return services.compute_chain(conn, waybill_id)
+
+
+# --------------------------------------------------------------------------- #
+# Abbreviation dictionary: one short custodian name may denote several carriers.
+# All endpoints below are documented and tryable in /docs.
+# --------------------------------------------------------------------------- #
+@app.get("/api/aliases", response_model=AliasListResponse, tags=["aliases"])
+def list_aliases(conn: sqlite3.Connection = Depends(get_conn)) -> AliasListResponse:
+    """列出简称字典（每个简称对应的整组正式保管方）及字典修订号。"""
+    return services.list_aliases(conn)
+
+
+@app.get(
+    "/api/aliases/{alias:path}",
+    response_model=AliasView,
+    tags=["aliases"],
+)
+def get_alias(
+    alias: str, conn: sqlite3.Connection = Depends(get_conn)
+) -> AliasView:
+    """查询单个简称对应的正式保管方；未登记返回 404。"""
+    return services.get_alias(conn, alias)
+
+
+@app.put(
+    "/api/aliases/{alias:path}",
+    response_model=AliasView,
+    tags=["aliases"],
+)
+def replace_alias(
+    alias: str,
+    body: AliasReplace,
+    conn: sqlite3.Connection = Depends(get_conn),
+) -> AliasView:
+    """整组替换一个简称对应的正式保管方。
+
+    空列表即注销该简称（之后该名称按未登记正式名处理）。替换在单个
+    ``BEGIN IMMEDIATE`` 事务内完成，失败保留原字典与原核链结论；
+    成功后的查链与批次回执均按新字典重新判定。
+    """
+    return services.replace_alias(conn, alias, body)
+
+
+@app.delete(
+    "/api/aliases/{alias:path}",
+    response_model=AliasView,
+    tags=["aliases"],
+)
+def delete_alias(
+    alias: str, conn: sqlite3.Connection = Depends(get_conn)
+) -> AliasView:
+    """注销一个简称；未登记返回 404。"""
+    return services.delete_alias(conn, alias)
 
 
 # --------------------------------------------------------------------------- #

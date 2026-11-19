@@ -127,8 +127,9 @@ class BatchSubmit(BaseModel):
 # --------------------------------------------------------------------------- #
 class BreakReason(str, Enum):
     none = "NONE"
-    gap = "GAP"  # 保管方不承接：giver != 前一 receiver
+    gap = "GAP"  # 保管方不承接：giver 候选不含当前保管方
     simultaneous = "SIMULTANEOUS"  # 同一时刻多笔交接，顺序不可判定
+    ambiguous = "AMBIGUOUS"  # 接收候选多个，旁证不足或无法唯一确认
 
 
 class ScanView(BaseModel):
@@ -140,6 +141,15 @@ class ScanView(BaseModel):
     receiver: str | None
     verified: bool
     unverified_reason: BreakReason | None = None
+    # 字典解析后的候选与判定结果。未登记名称按正式名处理，候选即其自身。
+    giver_candidates: list[str] = Field(default_factory=list)
+    receiver_candidates: list[str] = Field(default_factory=list)
+    confirmed_giver: str | None = None
+    confirmed_receiver: str | None = None
+    # 旁证：仅当本笔接收方存在多个候选、由紧接下一时刻的唯一扫描确认时填充。
+    corroborating_scan_id: str | None = None
+    corroborating_revision: int | None = None
+    unverified_detail: str | None = None
 
 
 class ChainResponse(BaseModel):
@@ -152,6 +162,8 @@ class ChainResponse(BaseModel):
     break_reason: BreakReason
     break_detail: str | None = None
     break_scan_ids: list[str] = Field(default_factory=list)
+    # 本次查链所依据的已提交字典修订号（字典与扫描处于同一读快照）。
+    dictionary_revision: int = 0
 
 
 class BatchResponse(BaseModel):
@@ -160,6 +172,44 @@ class BatchResponse(BaseModel):
     idempotent_duplicates: int
     withdrawn_scan_ids: list[str]
     chain: ChainResponse
+    # 回执对应本批提交后已提交状态的字典修订号。
+    dictionary_revision: int = 0
+
+
+# --------------------------------------------------------------------------- #
+# Abbreviation dictionary
+# --------------------------------------------------------------------------- #
+class AliasReplace(BaseModel):
+    """整组替换一个简称对应的正式保管方；空列表即注销该简称。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    formal_parties: list[str] = Field(
+        description="该简称对应的全部正式保管方（整组替换，顺序即返回顺序）"
+    )
+
+    @field_validator("formal_parties")
+    @classmethod
+    def _strip_and_dedup(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            name = value.strip()
+            if not name:
+                raise ValueError("formal party names must not be empty")
+            if name not in cleaned:
+                cleaned.append(name)
+        return cleaned
+
+
+class AliasView(BaseModel):
+    alias: str
+    formal_parties: list[str]
+    dictionary_revision: int
+
+
+class AliasListResponse(BaseModel):
+    dictionary_revision: int
+    aliases: list[AliasView]
 
 
 # --------------------------------------------------------------------------- #

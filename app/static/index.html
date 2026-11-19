@@ -75,6 +75,22 @@
   </div>
 
   <div class="card">
+    <h2>4. 简称字典（同一简称可指多家承运人）</h2>
+    <label>简称</label><input id="alias-name" placeholder="CARRIERS" value="CARRIERS" />
+    <label>正式保管方（整组替换，每行一个；留空数组即注销）</label>
+    <textarea id="alias-parties" style="min-height:90px">[
+  "CARRIER-A",
+  "CARRIER-B"
+]</textarea>
+    <div class="row">
+      <button onclick="replaceAlias()">整组替换</button>
+      <button class="secondary" onclick="deleteAlias()">注销简称</button>
+      <button class="secondary" onclick="loadAliases()">刷新字典</button>
+    </div>
+    <div id="alias-table" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
     <h2>原始响应</h2>
     <pre id="raw">（提交或查询后显示）</pre>
   </div>
@@ -114,25 +130,57 @@ async function submitBatch() {
 async function queryChain() {
   try {
     const data = await call(`/api/waybills/${encodeURIComponent($('query-wb').value.trim())}/chain`, 'GET');
-    setStatus('查询完成'); renderChain(data);
+    setStatus('查询完成（字典修订号 ' + data.dictionary_revision + '）'); renderChain(data);
   } catch (e) { setStatus('查询失败：' + e.message, true); }
+}
+async function replaceAlias() {
+  try {
+    const alias = encodeURIComponent($('alias-name').value.trim());
+    const parties = JSON.parse($('alias-parties').value);
+    const data = await call(`/api/aliases/${alias}`, 'PUT', {formal_parties: parties});
+    setStatus(`简称已替换，字典修订号 ${data.dictionary_revision}；查链将按新字典重新判定`);
+    loadAliases();
+  } catch (e) { setStatus('替换失败（原字典与原结论保留）：' + e.message, true); }
+}
+async function deleteAlias() {
+  try {
+    const alias = encodeURIComponent($('alias-name').value.trim());
+    const data = await call(`/api/aliases/${alias}`, 'DELETE');
+    setStatus(`简称已注销，字典修订号 ${data.dictionary_revision}`);
+    loadAliases();
+  } catch (e) { setStatus('注销失败：' + e.message, true); }
+}
+async function loadAliases() {
+  try {
+    const data = await call('/api/aliases', 'GET');
+    if (!data.aliases.length) {
+      $('alias-table').innerHTML = `<p class="hint">字典为空（修订号 ${data.dictionary_revision}），所有名称按正式名处理。</p>`;
+      return;
+    }
+    $('alias-table').innerHTML = '<table><tr><th>简称</th><th>正式保管方</th></tr>'
+      + data.aliases.map(a => `<tr><td>${esc(a.alias)}</td><td>${esc(a.formal_parties.join('、'))}</td></tr>`).join('')
+      + '</table>';
+  } catch (e) { setStatus('字典加载失败：' + e.message, true); }
 }
 function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function renderChain(c) {
   const intact = c.chain_intact;
   $('chain-summary').innerHTML =
-    `当前可确认保管方：<b>${esc(c.current_custodian)}</b><br/>` +
+    `当前可确认保管方：<b>${esc(c.current_custodian)}</b>　字典修订号：<b>${c.dictionary_revision}</b><br/>` +
     `链状态：<span class="pill ${intact ? 'ok' : 'bad'}">${intact ? '完整可信' : '存在断链'}</span> ` +
     (intact ? '' : `原因 <b>${esc(c.break_reason)}</b> — ${esc(c.break_detail)}`);
   const rows = [...c.verified_prefix.map(v => ({...v, _v: true})),
                 ...c.unverified_scans.map(v => ({...v, _v: false}))];
   if (!rows.length) { $('chain-table').innerHTML = '<p class="hint">暂无已采纳的交接扫描。</p>'; return; }
   $('chain-table').innerHTML = '<table><tr><th>状态</th><th>scan_id</th><th>修订</th><th>UTC 时刻</th>'
-    + '<th>交出方</th><th>接收方</th><th>未证实原因</th></tr>' + rows.map(r =>
+    + '<th>交出候选</th><th>接收候选</th><th>确认交出</th><th>确认接收</th><th>旁证</th><th>未证实原因</th></tr>' + rows.map(r =>
     `<tr><td><span class="pill ${r._v ? 'ok' : 'bad'}">${r._v ? '已证实' : '未证实'}</span></td>`
     + `<td>${esc(r.scan_id)}</td><td>${r.revision}</td><td>${esc(r.ts_utc)}</td>`
-    + `<td>${esc(r.giver)}</td><td>${esc(r.receiver)}</td>`
-    + `<td>${esc(r.unverified_reason ?? '')}</td></tr>`).join('') + '</table>';
+    + `<td>${esc((r.giver_candidates || []).join('、'))}</td>`
+    + `<td>${esc((r.receiver_candidates || []).join('、'))}</td>`
+    + `<td>${esc(r.confirmed_giver ?? '')}</td><td>${esc(r.confirmed_receiver ?? '')}</td>`
+    + `<td>${r.corroborating_scan_id ? esc(r.corroborating_scan_id) + ' #' + r.corroborating_revision : ''}</td>`
+    + `<td>${esc(r.unverified_reason ?? '')}${r.unverified_detail ? '<br/><span class="hint">' + esc(r.unverified_detail) + '</span>' : ''}</td></tr>`).join('') + '</table>';
 }
 </script>
 </body>

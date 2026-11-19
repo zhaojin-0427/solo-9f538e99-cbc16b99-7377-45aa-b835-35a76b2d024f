@@ -87,4 +87,42 @@ st, body = call("POST", "/api/waybills/AWB-SMOKE/scans/batch", {"scans": [
 ]})
 check("naive timestamp -> 422", st == 422)
 
+# abbreviation dictionary: one alias, several formal custodians
+st, body = call("GET", "/api/aliases")
+check("empty dictionary revision 0", st == 200 and body["dictionary_revision"] == 0 and body["aliases"] == [])
+
+st, body = call("PUT", "/api/aliases/MULTI", {"formal_parties": ["E", "F"]})
+check("alias group replaced", st == 200 and body["formal_parties"] == ["E", "F"] and body["dictionary_revision"] == 1)
+st, body = call("GET", "/api/aliases/MULTI")
+check("alias readable", st == 200 and body["formal_parties"] == ["E", "F"])
+st, body = call("GET", "/api/aliases/NOPE")
+check("unknown alias -> 404", st == 404)
+
+# ambiguous receiver disambiguated only by the single scan at the next timestamp
+st, body = call("POST", "/api/waybills", {"waybill_id": "AWB-ALIAS", "origin_party": "ORIG"})
+check("create alias waybill", st == 201, body)
+st, body = call("POST", "/api/waybills/AWB-ALIAS/scans/batch", {"scans": [
+    {"scan_id": "A1", "revision": 1, "ts_utc": "2026-11-18T08:00:00Z", "giver": "ORIG", "receiver": "MULTI"},
+    {"scan_id": "A2", "revision": 1, "ts_utc": "2026-11-18T09:00:00Z", "giver": "E", "receiver": "G"},
+]})
+check("corroboration confirms receiver E", st == 200 and body["chain"]["break_reason"] == "NONE")
+a1 = body["chain"]["verified_prefix"][0]
+check("receipt carries confirmation + witness",
+      a1["confirmed_receiver"] == "E" and a1["corroborating_scan_id"] == "A2"
+      and a1["corroborating_revision"] == 1 and body["dictionary_revision"] == 1)
+
+# withdraw the witness: previous scan must be re-judged to AMBIGUOUS
+st, body = call("POST", "/api/waybills/AWB-ALIAS/scans/batch", {"scans": [
+    {"scan_id": "A2", "revision": 2, "event_type": "WITHDRAWAL"},
+]})
+check("witness withdrawal re-breaks previous scan",
+      st == 200 and body["chain"]["break_reason"] == "AMBIGUOUS"
+      and body["chain"]["break_scan_ids"] == ["A1"])
+
+# deregister the alias: names become formal names again
+st, body = call("DELETE", "/api/aliases/MULTI")
+check("alias deleted", st == 200 and body["dictionary_revision"] == 2)
+st, body = call("GET", "/api/aliases/MULTI")
+check("deleted alias -> 404", st == 404)
+
 print("ALL SMOKE CHECKS PASSED")

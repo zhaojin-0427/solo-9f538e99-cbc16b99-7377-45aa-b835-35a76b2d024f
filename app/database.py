@@ -16,7 +16,6 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
-
 from . import config
 
 _SCHEMA = """
@@ -46,6 +45,23 @@ CREATE TABLE IF NOT EXISTS scans (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scans_waybill ON scans (waybill_id, scan_id, revision);
+
+-- Abbreviation dictionary: one row per (alias -> formal custodian).  A single
+-- alias may point at several carriers, so replacement means deleting every
+-- row of the group and inserting the new set atomically.  Rows are kept in
+-- insertion order (rowid) so candidate lists stay stable.
+CREATE TABLE IF NOT EXISTS aliases (
+    alias         TEXT NOT NULL,
+    formal_party  TEXT NOT NULL,
+    PRIMARY KEY (alias, formal_party)
+);
+
+-- Single-row-per-key metadata, e.g. the monotonically increasing revision of
+-- the committed abbreviation dictionary.
+CREATE TABLE IF NOT EXISTS app_meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
 """
 
 
@@ -83,6 +99,24 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     committed chain untouched.
     """
     conn.execute("BEGIN IMMEDIATE;")
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+
+
+@contextmanager
+def read_transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Pin one read snapshot for the whole block.
+
+    Chain evaluation must read the abbreviation dictionary and the scans from
+    the same committed state: a plain deferred ``BEGIN`` never upgrades to a
+    write lock, so the block observes one immutable snapshot under WAL.
+    """
+    conn.execute("BEGIN;")
     try:
         yield conn
     except Exception:
